@@ -1,5 +1,4 @@
 local car = {}
-local cars = {}
 local obstacles = {}
 local powerUps = {}
 local laneWidth = 150
@@ -13,42 +12,34 @@ local powerUpSpawnTime = 5
 local obstacleTimer = 0
 local powerUpTimer = 0
 local score = 0
-local level = 1
 local gameOver = false
 local gamePaused = false
 local backgroundLines = {}
 local backgroundSpeed = 400
 local carHealth = 3
 local maxHealth = 3
-local invincible = false
-local invincibleTimer = 0
-local invincibleDuration = 3
+local level = 1
+local powerUpEffectTimer = 0
+local powerUpActive = false
+local powerUpType = ""
 local soundEffects = {}
-local backgroundMusic = nil
-local leaderboard = {}
+local music
 
 function love.load()
     love.window.setMode(gameWidth, gameHeight)
 
-    cars = {
-        { name = "Speedster", width = 50, height = 100, speed = 250, health = 2 },
-        { name = "Tank", width = 60, height = 120, speed = 200, health = 4 },
-        { name = "Balanced", width = 50, height = 100, speed = 220, health = 3 }
-    }
-
-    selectCar(1)
+    car.width = 50
+    car.height = 100
+    car.lane = 2
+    car.x = (car.lane - 1) * laneWidth + (laneWidth / 2) - (car.width / 2)
+    car.y = gameHeight - car.height - 50
 
     for i = 1, 10 do
         table.insert(backgroundLines, { y = (i - 1) * 100 })
     end
 
-    soundEffects["collision"] = love.audio.newSource("collision.wav", "static")
-    soundEffects["powerup"] = love.audio.newSource("powerup.wav", "static")
-    soundEffects["invincible"] = love.audio.newSource("invincible.wav", "static")
-
-    backgroundMusic = love.audio.newSource("background_music.mp3", "stream")
-    backgroundMusic:setLooping(true)
-    love.audio.play(backgroundMusic)
+    loadSounds()
+    playMusic()
 end
 
 function love.update(dt)
@@ -58,8 +49,9 @@ function love.update(dt)
         spawnAndMoveObstacles(dt)
         spawnAndMovePowerUps(dt)
         checkCollisions()
+        applyPowerUpEffects(dt)
         increaseDifficulty(dt)
-        updateInvincibility(dt)
+        updateLevel()
     elseif love.keyboard.isDown("r") then
         restartGame()
     elseif love.keyboard.isDown("p") then
@@ -69,7 +61,7 @@ end
 
 function love.draw()
     drawBackground()
-
+    
     if gamePaused then
         love.graphics.setColor(1, 1, 0)
         love.graphics.printf("PAUSED", 0, gameHeight / 2, gameWidth, "center")
@@ -79,8 +71,6 @@ function love.draw()
         love.graphics.printf("GAME OVER", 0, gameHeight / 2 - 50, gameWidth, "center")
         love.graphics.printf("Press 'R' to Restart", 0, gameHeight / 2, gameWidth, "center")
         love.graphics.printf("Score: " .. score, 0, gameHeight / 2 + 50, gameWidth, "center")
-        love.graphics.printf("Leaderboard", 0, gameHeight / 2 + 80, gameWidth, "center")
-        drawLeaderboard()
     else
         love.graphics.setColor(0.9, 0.1, 0.1)
         love.graphics.rectangle("fill", car.x, car.y, car.width, car.height)
@@ -98,12 +88,10 @@ function love.draw()
         love.graphics.setColor(1, 1, 1)
         love.graphics.print("Score: " .. score, 10, 10)
         love.graphics.print("Level: " .. level, 10, 30)
-        drawHealthBar()
-
-        if invincible then
-            love.graphics.setColor(1, 1, 0)
-            love.graphics.printf("INVINCIBLE", 0, car.y - 20, gameWidth, "center")
+        if powerUpActive then
+            love.graphics.print("Power-Up: " .. powerUpType, 10, 50)
         end
+        drawHealthBar()
     end
 end
 
@@ -148,6 +136,14 @@ function spawnAndMoveObstacles(dt)
         if obstacle.y > gameHeight then
             table.remove(obstacles, i)
             score = score + 1
+        else
+            if obstacle.type == "moving" then
+                obstacle.x = obstacle.x + math.sin(love.timer.getTime() * 5) * 100 * dt
+                if obstacle.x < 0 then obstacle.x = 0 end
+                if obstacle.x + obstacle.width > gameWidth then obstacle.x = gameWidth - obstacle.width end
+            elseif obstacle.type == "split" and obstacle.y > gameHeight / 2 and not obstacle.split then
+                splitObstacle(i)
+            end
         end
     end
 end
@@ -175,30 +171,53 @@ function spawnObstacle()
     obstacle.x = (obstacle.lane - 1) * laneWidth + (laneWidth / 2) - (obstacle.width / 2)
     obstacle.y = -obstacle.height
     obstacle.speed = obstacleSpeed + math.random(-50, 50)
+    
+    local obstacleTypeChance = math.random()
+    if obstacleTypeChance < 0.2 then
+        obstacle.type = "moving"
+    elseif obstacleTypeChance < 0.4 then
+        obstacle.type = "split"
+        obstacle.split = false
+    else
+        obstacle.type = "normal"
+    end
+    
     table.insert(obstacles, obstacle)
 end
 
 function spawnPowerUp()
-    local powerUpTypes = { "health", "invincible", "speed" }
     local powerUp = {}
-    powerUp.type = powerUpTypes[math.random(1, #powerUpTypes)]
     powerUp.size = 40
     powerUp.lane = math.random(1, laneCount)
     powerUp.x = (powerUp.lane - 1) * laneWidth + (laneWidth / 2) - (powerUp.size / 2)
     powerUp.y = -powerUp.size
+    
+    local powerUpTypeChance = math.random()
+    if powerUpTypeChance < 0.5 then
+        powerUp.type = "health"
+    elseif powerUpTypeChance < 0.8 then
+        powerUp.type = "speed"
+    else
+        powerUp.type = "invincibility"
+    end
+    
     table.insert(powerUps, powerUp)
 end
 
 function checkCollisions()
     for i, obstacle in ipairs(obstacles) do
         if checkCollision(car, obstacle) then
-            if not invincible then
-                carHealth = carHealth - 1
-                love.audio.play(soundEffects["collision"])
+            if powerUpType == "invincibility" then
                 table.remove(obstacles, i)
+                playSound("powerUp")
+            else
+                carHealth = carHealth - 1
+                playSound("collision")
+                table.remove(obstacles, i)
+                if carHealth <= 0
                 if carHealth <= 0 then
                     gameOver = true
-                    updateLeaderboard()
+                    playSound("gameOver")
                 end
             end
         end
@@ -206,16 +225,8 @@ function checkCollisions()
 
     for i, powerUp in ipairs(powerUps) do
         if checkCollision(car, powerUp) then
-            if powerUp.type == "health" then
-                carHealth = math.min(carHealth + 1, maxHealth)
-            elseif powerUp.type == "invincible" then
-                invincible = true
-                invincibleTimer = 0
-                love.audio.play(soundEffects["invincible"])
-            elseif powerUp.type == "speed" then
-                speed = speed + 50
-            end
-            love.audio.play(soundEffects["powerup"])
+            applyPowerUp(powerUp.type)
+            playSound("powerUp")
             table.remove(powerUps, i)
         end
     end
@@ -228,24 +239,56 @@ function checkCollision(a, b)
            a.y + a.height > b.y
 end
 
-function increaseDifficulty(dt)
-    obstacleSpeed = obstacleSpeed + 10 * dt
-    backgroundSpeed = backgroundSpeed + 10 * dt
+function applyPowerUp(type)
+    powerUpActive = true
+    powerUpType = type
+    powerUpEffectTimer = 5
 
-    if score > 0 and score % 10 == 0 then
-        level = level + 1
-        obstacleSpeed = obstacleSpeed + 50
-        backgroundSpeed = backgroundSpeed + 50
+    if type == "health" then
+        carHealth = math.min(carHealth + 1, maxHealth)
+    elseif type == "speed" then
+        backgroundSpeed = backgroundSpeed + 200
+    elseif type == "invincibility" then
+        -- Invincibility logic handled in checkCollisions
     end
 end
 
-function updateInvincibility(dt)
-    if invincible then
-        invincibleTimer = invincibleTimer + dt
-        if invincibleTimer >= invincibleDuration then
-            invincible = false
+function applyPowerUpEffects(dt)
+    if powerUpActive then
+        powerUpEffectTimer = powerUpEffectTimer - dt
+        if powerUpEffectTimer <= 0 then
+            powerUpActive = false
+            powerUpType = ""
+            backgroundSpeed = 400 -- Reset to normal speed
         end
     end
+end
+
+function splitObstacle(index)
+    local obstacle = obstacles[index]
+    local halfWidth = obstacle.width / 2
+    obstacle.width = halfWidth
+    obstacle.split = true
+
+    local newObstacle = {
+        width = halfWidth,
+        height = obstacle.height,
+        x = obstacle.x + halfWidth + 10,
+        y = obstacle.y,
+        speed = obstacle.speed,
+        type = "normal"
+    }
+
+    table.insert(obstacles, newObstacle)
+end
+
+function increaseDifficulty(dt)
+    obstacleSpeed = obstacleSpeed + 10 * dt
+    backgroundSpeed = backgroundSpeed + 10 * dt
+end
+
+function updateLevel()
+    level = math.floor(score / 20) + 1
 end
 
 function drawHealthBar()
@@ -262,18 +305,6 @@ function drawHealthBar()
     love.graphics.rectangle("fill", x, y, healthWidth, barHeight)
 end
 
-function updateLeaderboard()
-    table.insert(leaderboard, score)
-    table.sort(leaderboard, function(a, b) return a > b end)
-end
-
-function drawLeaderboard()
-    love.graphics.setColor(1, 1, 1)
-    for i = 1, math.min(#leaderboard, 5) do
-        love.graphics.printf(i .. ". " .. leaderboard[i], 0, gameHeight / 2 + 100 + i * 20, gameWidth, "center")
-    end
-end
-
 function restartGame()
     car.lane = 2
     car.x = (car.lane - 1) * laneWidth + (laneWidth / 2) - (car.width / 2)
@@ -283,16 +314,24 @@ function restartGame()
     backgroundSpeed = 400
     score = 0
     carHealth = maxHealth
-    invincible = false
+    level = 1
     gameOver = false
+    powerUpActive = false
+    powerUpType = ""
 end
 
-function selectCar(index)
-    car = cars[index]
-    car.lane = 2
-    car.x = (car.lane - 1) * laneWidth + (laneWidth / 2) - (car.width / 2)
-    car.y = gameHeight - car.height - 50
-    carHealth = car.health
-    maxHealth = car.health
-    speed = car.speed
+function loadSounds()
+    soundEffects.collision = love.audio.newSource("collision.wav", "static")
+    soundEffects.powerUp = love.audio.newSource("powerup.wav", "static")
+    soundEffects.gameOver = love.audio.newSource("gameover.wav", "static")
+end
+
+function playSound(name)
+    love.audio.play(soundEffects[name])
+end
+
+function playMusic()
+    music = love.audio.newSource("background_music.mp3", "stream")
+    music:setLooping(true)
+    love.audio.play(music)
 end
