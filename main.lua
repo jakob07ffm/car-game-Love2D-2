@@ -23,7 +23,6 @@ local powerUpEffectTimer = 0
 local powerUpActive = false
 local powerUpType = ""
 local soundEffects = {}
-local music
 
 function love.load()
     love.window.setMode(gameWidth, gameHeight)
@@ -37,9 +36,6 @@ function love.load()
     for i = 1, 10 do
         table.insert(backgroundLines, { y = (i - 1) * 100 })
     end
-
-    loadSounds()
-    playMusic()
 end
 
 function love.update(dt)
@@ -214,7 +210,6 @@ function checkCollisions()
                 carHealth = carHealth - 1
                 playSound("collision")
                 table.remove(obstacles, i)
-                if carHealth <= 0
                 if carHealth <= 0 then
                     gameOver = true
                     playSound("gameOver")
@@ -321,17 +316,15 @@ function restartGame()
 end
 
 function loadSounds()
-    soundEffects.collision = love.audio.newSource("collision.wav", "static")
-    soundEffects.powerUp = love.audio.newSource("powerup.wav", "static")
-    soundEffects.gameOver = love.audio.newSource("gameover.wav", "static")
+    soundEffects.collision = function() print("Collision sound") end
+    soundEffects.powerUp = function() print("PowerUp sound") end
+    soundEffects.gameOver = function() print("GameOver sound") end
 end
 
 function playSound(name)
-    love.audio.play(soundEffects[name])
+    soundEffects[name]()
 end
 
 function playMusic()
-    music = love.audio.newSource("background_music.mp3", "stream")
-    music:setLooping(true)
-    love.audio.play(music)
+    print("Playing background music (removed)")
 end
